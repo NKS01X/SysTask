@@ -37,7 +37,7 @@ export default function App() {
 
   return (
     <main className="container">
-      <h1>Task Manager</h1>
+      <h1>SysTask</h1>
       <div className="row">
         <input
           value={title}

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Linux Task Manager",
+  "productName": "SysTask",
   "version": "0.1.0",
-  "identifier": "com.nks01x.linuxtaskmanager",
+  "identifier": "com.nks01x.systask",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Linux Task Manager",
+        "title": "SysTask",
         "width": 900,
         "height": 600
       }
