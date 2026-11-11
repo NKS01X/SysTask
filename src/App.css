@@ -1,0 +1,75 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #1a1a1a;
+  background: #f6f6f6;
+}
+
+.container {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.row input {
+  flex: 1;
+}
+
+input[type="text"],
+.row input {
+  padding: 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+}
+
+button {
+  padding: 0.5rem 0.9rem;
+  border: 0;
+  border-radius: 6px;
+  background: #2f6feb;
+  color: #fff;
+  cursor: pointer;
+}
+
+ul {
+  list-style: none;
+  padding: 0;
+}
+
+li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid #ddd;
+}
+
+li.done label {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+li label {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #eee;
+    background: #1e1e1e;
+  }
+  li {
+    border-color: #333;
+  }
+  .row input {
+    background: #2a2a2a;
+    color: #eee;
+    border-color: #444;
+  }
+}
