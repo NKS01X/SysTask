@@ -1,82 +1,37 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-
-interface ProcInfo {
-  pid: number;
-  ppid: number | null;
-  name: string;
-  user: string;
-  cpu: number;
-  mem: number;
-  status: string;
-  cmd: string;
-}
-
-interface Stats {
-  cpu_total: number;
-  cpu_cores: number[];
-  mem_total: number;
-  mem_used: number;
-  swap_total: number;
-  swap_used: number;
-  uptime: number;
-  load: [number, number, number];
-}
-
-interface Snapshot {
-  stats: Stats;
-  processes: ProcInfo[];
-}
-
-type SortKey = "pid" | "name" | "user" | "cpu" | "mem" | "status";
-type SortDir = "asc" | "desc";
+import Graph from "./components/Graph";
+import Popover from "./components/Popover";
+import ProcTable from "./components/ProcTable";
+import DetailsPanel from "./components/DetailsPanel";
+import { COLUMNS } from "./columns";
+import { useSettings } from "./settings";
+import { buildRows } from "./tree";
+import { fmtBytes, fmtRate, fmtUptime, level, push } from "./util";
+import type { ActFn, ColumnKey, Snapshot, Theme } from "./types";
 
 const SIGNALS = ["TERM", "KILL", "INT", "HUP", "STOP", "CONT"];
 const RATES = [500, 1000, 2000, 5000];
 
-const COLUMNS: { key: SortKey; label: string; numeric?: boolean }[] = [
-  { key: "pid", label: "PID", numeric: true },
-  { key: "name", label: "Name" },
-  { key: "user", label: "User" },
-  { key: "cpu", label: "CPU %", numeric: true },
-  { key: "mem", label: "Memory", numeric: true },
-  { key: "status", label: "State" },
-];
-
-function fmtBytes(n: number): string {
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let v = n;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+interface History {
+  cpu: number[];
+  mem: number[];
+  dr: number[];
+  dw: number[];
+  rx: number[];
+  tx: number[];
 }
 
-function fmtUptime(s: number): string {
-  const d = Math.floor(s / 86400);
-  const h = Math.floor((s % 86400) / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  return d > 0 ? `${d}d ${h}h ${m}m` : `${h}h ${m}m`;
+const EMPTY_HISTORY: History = { cpu: [], mem: [], dr: [], dw: [], rx: [], tx: [] };
+
+interface AlertItem {
+  id: number;
+  title: string;
+  body: string;
 }
 
-function level(p: number): string {
-  if (p >= 85) return "hot";
-  if (p >= 60) return "warn";
-  return "ok";
-}
-
-function Meter({
-  label,
-  percent,
-  detail,
-}: {
-  label: string;
-  percent: number;
-  detail: string;
-}) {
+function Meter({ label, percent, detail }: { label: string; percent: number; detail: string }) {
   const p = Math.max(0, Math.min(100, percent));
   return (
     <div className="meter">
@@ -92,25 +47,62 @@ function Meter({
 }
 
 export default function App() {
+  const [settings, update] = useSettings();
   const [snap, setSnap] = useState<Snapshot | null>(null);
+  const [hist, setHist] = useState<History>(EMPTY_HISTORY);
+  const [procCpu, setProcCpu] = useState<number[]>([]);
+  const [paused, setPaused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [retry, setRetry] = useState<{ label: string; run: () => void } | null>(null);
   const [query, setQuery] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("cpu");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [selected, setSelected] = useState<number | null>(null);
   const [signal, setSignal] = useState("TERM");
-  const [confirming, setConfirming] = useState(false);
-  const [rate, setRate] = useState(1000);
+  const [confirm, setConfirm] = useState<{ tree: boolean; asRoot: boolean } | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
+  const [showDetails, setShowDetails] = useState(true);
+  const [alerts, setAlerts] = useState<AlertItem[]>([]);
+
   const searchRef = useRef<HTMLInputElement>(null);
+  const pausedRef = useRef(false);
+  const selectedRef = useRef<number | null>(null);
+  const procHist = useRef<{ pid: number | null; data: number[] }>({ pid: null, data: [] });
+  const track = useRef({
+    cpu: { since: 0, fired: false },
+    mem: { since: 0, fired: false },
+  });
+
+  const ingest = useCallback((s: Snapshot) => {
+    if (pausedRef.current) return;
+    setSnap(s);
+    const st = s.stats;
+    const memPct = st.mem_total > 0 ? (st.mem_used / st.mem_total) * 100 : 0;
+    setHist((h) => ({
+      cpu: push(h.cpu, st.cpu_total),
+      mem: push(h.mem, memPct),
+      dr: push(h.dr, st.disk_read_bps),
+      dw: push(h.dw, st.disk_write_bps),
+      rx: push(h.rx, st.net_rx_bps),
+      tx: push(h.tx, st.net_tx_bps),
+    }));
+    const sel = selectedRef.current;
+    if (sel !== procHist.current.pid) procHist.current = { pid: sel, data: [] };
+    if (sel !== null) {
+      const p = s.processes.find((x) => x.pid === sel);
+      if (p) {
+        procHist.current.data = push(procHist.current.data, p.cpu);
+        setProcCpu(procHist.current.data);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     invoke<Snapshot>("get_snapshot")
-      .then(setSnap)
+      .then(ingest)
       .catch((e) => setError(String(e)));
-    listen<Snapshot>("snapshot", (e) => setSnap(e.payload)).then((fn) => {
+    listen<Snapshot>("snapshot", (e) => ingest(e.payload)).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
     });
@@ -118,36 +110,47 @@ export default function App() {
       cancelled = true;
       unlisten?.();
     };
-  }, []);
+  }, [ingest]);
 
   useEffect(() => {
-    invoke("set_refresh_rate", { ms: rate }).catch((e) => setError(String(e)));
-  }, [rate]);
+    invoke("set_refresh_rate", { ms: settings.rate }).catch((e) => setError(String(e)));
+  }, [settings.rate]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (settings.theme === "system") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", settings.theme);
+  }, [settings.theme]);
+
+  useEffect(() => {
+    selectedRef.current = selected;
+    procHist.current = { pid: selected, data: [] };
+    setProcCpu([]);
+  }, [selected]);
+
+  const togglePause = () => {
+    const next = !paused;
+    pausedRef.current = next;
+    setPaused(next);
+    if (!next) {
+      invoke<Snapshot>("get_snapshot")
+        .then(ingest)
+        .catch((e) => setError(String(e)));
+    }
+  };
 
   const rows = useMemo(() => {
     if (!snap) return [];
-    const q = query.trim().toLowerCase();
-    const filtered = q
-      ? snap.processes.filter(
-          (p) =>
-            p.name.toLowerCase().includes(q) ||
-            p.user.toLowerCase().includes(q) ||
-            p.cmd.toLowerCase().includes(q) ||
-            String(p.pid).includes(q)
-        )
-      : snap.processes.slice();
-    const dir = sortDir === "asc" ? 1 : -1;
-    filtered.sort((a, b) => {
-      const x = a[sortKey];
-      const y = b[sortKey];
-      const c =
-        typeof x === "number" && typeof y === "number"
-          ? x - y
-          : String(x).localeCompare(String(y));
-      return c !== 0 ? c * dir : a.pid - b.pid;
+    return buildRows(snap.processes, {
+      query,
+      mineOnly: settings.mineOnly,
+      me: snap.me,
+      sortKey: settings.sortKey,
+      sortDir: settings.sortDir,
+      tree: settings.tree,
+      collapsed,
     });
-    return filtered;
-  }, [snap, query, sortKey, sortDir]);
+  }, [snap, query, settings.mineOnly, settings.sortKey, settings.sortDir, settings.tree, collapsed]);
 
   const selectedProc = useMemo(
     () => snap?.processes.find((p) => p.pid === selected) ?? null,
@@ -155,8 +158,15 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (!selectedProc) setConfirming(false);
+    if (!selectedProc) setConfirm(null);
   }, [selectedProc]);
+
+  const needsRoot = !!selectedProc && !!snap && selectedProc.user === "root" && !snap.is_root;
+
+  const openConfirm = useCallback(
+    (tree: boolean) => setConfirm({ tree, asRoot: needsRoot }),
+    [needsRoot]
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -164,45 +174,126 @@ export default function App() {
         document.activeElement instanceof HTMLInputElement ||
         document.activeElement instanceof HTMLSelectElement;
       if (e.key === "Escape") {
-        if (confirming) setConfirming(false);
+        if (confirm) setConfirm(null);
         else if (typing) (document.activeElement as HTMLElement).blur();
         else setSelected(null);
       } else if (e.key === "/" && !typing) {
         e.preventDefault();
         searchRef.current?.focus();
       } else if (e.key === "Delete" && !typing && selectedProc) {
-        setConfirming(true);
+        openConfirm(e.shiftKey);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [confirming, selectedProc]);
+  }, [confirm, selectedProc, openConfirm]);
 
-  const sortBy = (key: SortKey) => {
-    if (key === sortKey) {
-      setSortDir(sortDir === "asc" ? "desc" : "asc");
+  const act: ActFn = (label, fn, preferElevated = false) => {
+    const exec = async (elevated: boolean) => {
+      try {
+        const msg = await fn(elevated);
+        setError(null);
+        setRetry(null);
+        setNotice(msg || `${label}: done`);
+      } catch (e) {
+        const m = String(e);
+        setNotice(null);
+        setError(m);
+        if (!elevated && /permission|not permitted|denied/i.test(m)) {
+          setRetry({ label, run: () => void exec(true) });
+        } else {
+          setRetry(null);
+        }
+      }
+    };
+    void exec(preferElevated);
+  };
+
+  const sortBy = (key: ColumnKey) => {
+    if (key === settings.sortKey) {
+      update({ sortDir: settings.sortDir === "asc" ? "desc" : "asc" });
     } else {
-      setSortKey(key);
-      setSortDir(key === "name" || key === "user" || key === "status" ? "asc" : "desc");
+      const numeric = COLUMNS.find((c) => c.key === key)?.numeric;
+      update({ sortKey: key, sortDir: numeric ? "desc" : "asc" });
     }
   };
 
-  const sendSignal = async () => {
-    if (!selectedProc) return;
-    try {
-      await invoke("kill_process", { pid: selectedProc.pid, signal });
-      setError(null);
-      setNotice(`Sent SIG${signal} to ${selectedProc.name} (${selectedProc.pid})`);
-    } catch (e) {
-      setNotice(null);
-      setError(String(e));
-    }
-    setConfirming(false);
+  const sendSignal = () => {
+    if (!selectedProc || !confirm) return;
+    const { tree, asRoot } = confirm;
+    const pid = selectedProc.pid;
+    act(
+      `SIG${signal} ${selectedProc.name}`,
+      (el) => invoke<string>("kill_process", { pid, signal, tree, elevated: el }),
+      asRoot
+    );
+    setConfirm(null);
+  };
+
+  const collapseAll = () => {
+    if (!snap) return;
+    const s = new Set<number>();
+    snap.processes.forEach((p) => {
+      if (p.ppid !== null) s.add(p.ppid);
+    });
+    setCollapsed(s);
+  };
+
+  const toggleNode = (pid: number) =>
+    setCollapsed((cur) => {
+      const n = new Set(cur);
+      if (n.has(pid)) n.delete(pid);
+      else n.add(pid);
+      return n;
+    });
+
+  // High CPU / memory alerts
+  useEffect(() => {
+    const a = settings.alerts;
+    if (!snap || !a.enabled) return;
+    const now = Date.now();
+    const st = snap.stats;
+    const memPct = st.mem_total > 0 ? (st.mem_used / st.mem_total) * 100 : 0;
+    const fire = (title: string, body: string) => {
+      setAlerts((prev) => [{ id: now, title, body }, ...prev].slice(0, 3));
+      invoke("notify", { title, body }).catch(() => {});
+    };
+    const check = (key: "cpu" | "mem", value: number, limit: number, text: () => string) => {
+      const t = track.current[key];
+      if (value >= limit) {
+        if (t.since === 0) t.since = now;
+        if (!t.fired && now - t.since >= a.seconds * 1000) {
+          t.fired = true;
+          fire(key === "cpu" ? "High CPU usage" : "High memory usage", text());
+        }
+      } else if (value < limit - 5) {
+        t.since = 0;
+        t.fired = false;
+      }
+    };
+    check("cpu", st.cpu_total, a.cpu, () => {
+      const top = [...snap.processes].sort((x, y) => y.cpu - x.cpu)[0];
+      return `CPU at ${st.cpu_total.toFixed(0)}%${top ? ` · top: ${top.name} (${top.cpu.toFixed(0)}%)` : ""}`;
+    });
+    check("mem", memPct, a.mem, () => {
+      const top = [...snap.processes].sort((x, y) => y.mem - x.mem)[0];
+      return `Memory at ${memPct.toFixed(0)}%${top ? ` · top: ${top.name} (${fmtBytes(top.mem)})` : ""}`;
+    });
+  }, [snap, settings.alerts]);
+
+  const visibleCols = COLUMNS.filter((c) => c.locked || settings.columns.includes(c.key));
+  const toggleColumn = (key: ColumnKey) => {
+    const cols = settings.columns.includes(key)
+      ? settings.columns.filter((k) => k !== key)
+      : [...settings.columns, key];
+    update({ columns: cols });
   };
 
   const s = snap?.stats;
   const memPct = s && s.mem_total > 0 ? (s.mem_used / s.mem_total) * 100 : 0;
   const swapPct = s && s.swap_total > 0 ? (s.swap_used / s.swap_total) * 100 : 0;
+  const a = settings.alerts;
+  const setAlert = (patch: Partial<typeof a>) => update({ alerts: { ...a, ...patch } });
 
   return (
     <div className="app">
@@ -210,6 +301,8 @@ export default function App() {
         <div className="brand">
           <img src="/logo.svg" alt="" width={28} height={28} />
           <h1>SysTask</h1>
+          {snap?.is_root && <span className="badge">root</span>}
+          {paused && <span className="badge warn">paused</span>}
         </div>
         {s && (
           <div className="sysinfo muted">
@@ -219,6 +312,17 @@ export default function App() {
           </div>
         )}
       </header>
+
+      {alerts.map((al) => (
+        <div className="alert" key={al.id}>
+          <span>
+            <strong>{al.title}</strong> — {al.body}
+          </span>
+          <button className="ghost" onClick={() => setAlerts((p) => p.filter((x) => x.id !== al.id))}>
+            Dismiss
+          </button>
+        </div>
+      ))}
 
       {s && (
         <section className="meters">
@@ -255,6 +359,39 @@ export default function App() {
         </section>
       )}
 
+      {s && settings.showGraphs && (
+        <section className="graphs">
+          <Graph
+            label="CPU history"
+            value={`${s.cpu_total.toFixed(1)}%`}
+            max={100}
+            series={[{ data: hist.cpu, color: "var(--accent)" }]}
+          />
+          <Graph
+            label="Memory history"
+            value={`${memPct.toFixed(1)}%`}
+            max={100}
+            series={[{ data: hist.mem, color: "var(--ok)" }]}
+          />
+          <Graph
+            label="Disk I/O"
+            value={`R ${fmtRate(s.disk_read_bps)} · W ${fmtRate(s.disk_write_bps)}`}
+            series={[
+              { data: hist.dr, color: "var(--ok)" },
+              { data: hist.dw, color: "var(--warn)" },
+            ]}
+          />
+          <Graph
+            label="Network"
+            value={`↓ ${fmtRate(s.net_rx_bps)} · ↑ ${fmtRate(s.net_tx_bps)}`}
+            series={[
+              { data: hist.rx, color: "var(--accent)" },
+              { data: hist.tx, color: "var(--hot)" },
+            ]}
+          />
+        </section>
+      )}
+
       <section className="toolbar">
         <input
           ref={searchRef}
@@ -264,9 +401,41 @@ export default function App() {
           placeholder="Search name, user, PID, command   ( / )"
           onChange={(e) => setQuery(e.target.value)}
         />
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={settings.mineOnly}
+            onChange={(e) => update({ mineOnly: e.target.checked })}
+          />
+          My processes
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={settings.tree}
+            onChange={(e) => update({ tree: e.target.checked })}
+          />
+          Tree
+        </label>
+        {settings.tree && (
+          <>
+            <button className="ghost" onClick={() => setCollapsed(new Set())}>
+              Expand all
+            </button>
+            <button className="ghost" onClick={collapseAll}>
+              Collapse all
+            </button>
+          </>
+        )}
+        <button className={paused ? "warnbtn" : "ghost"} onClick={togglePause}>
+          {paused ? "▶ Resume" : "⏸ Pause"}
+        </button>
         <label className="muted">
           Refresh
-          <select value={rate} onChange={(e) => setRate(Number(e.target.value))}>
+          <select
+            value={settings.rate}
+            onChange={(e) => update({ rate: Number(e.target.value) })}
+          >
             {RATES.map((r) => (
               <option key={r} value={r}>
                 {r / 1000}s
@@ -274,6 +443,76 @@ export default function App() {
             ))}
           </select>
         </label>
+        <Popover label="Columns">
+          {COLUMNS.map((c) => (
+            <label key={c.key} className="check block">
+              <input
+                type="checkbox"
+                checked={c.locked || settings.columns.includes(c.key)}
+                disabled={c.locked}
+                onChange={() => toggleColumn(c.key)}
+              />
+              {c.label}
+            </label>
+          ))}
+          <label className="check block">
+            <input
+              type="checkbox"
+              checked={settings.showGraphs}
+              onChange={(e) => update({ showGraphs: e.target.checked })}
+            />
+            Show graphs
+          </label>
+        </Popover>
+        <Popover label="Alerts">
+          <label className="check block">
+            <input
+              type="checkbox"
+              checked={a.enabled}
+              onChange={(e) => setAlert({ enabled: e.target.checked })}
+            />
+            Enable alerts
+          </label>
+          <label className="field">
+            CPU ≥ %
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={a.cpu}
+              onChange={(e) => setAlert({ cpu: Number(e.target.value) })}
+            />
+          </label>
+          <label className="field">
+            Memory ≥ %
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={a.mem}
+              onChange={(e) => setAlert({ mem: Number(e.target.value) })}
+            />
+          </label>
+          <label className="field">
+            Sustained (s)
+            <input
+              type="number"
+              min={0}
+              max={600}
+              value={a.seconds}
+              onChange={(e) => setAlert({ seconds: Number(e.target.value) })}
+            />
+          </label>
+        </Popover>
+        <select
+          value={settings.theme}
+          onChange={(e) => update({ theme: e.target.value as Theme })}
+          title="Theme"
+        >
+          <option value="system">Theme: system</option>
+          <option value="dark">Theme: dark</option>
+          <option value="light">Theme: light</option>
+        </select>
         <div className="spacer" />
         <select value={signal} onChange={(e) => setSignal(e.target.value)}>
           {SIGNALS.map((sg) => (
@@ -282,70 +521,64 @@ export default function App() {
             </option>
           ))}
         </select>
-        <button
-          className="danger"
-          disabled={!selectedProc}
-          onClick={() => setConfirming(true)}
-        >
+        <button className="danger" disabled={!selectedProc} onClick={() => openConfirm(false)}>
           Send signal
+        </button>
+        <button className="danger" disabled={!selectedProc} onClick={() => openConfirm(true)}>
+          Kill tree
+        </button>
+        <button className="ghost" onClick={() => setShowDetails(!showDetails)}>
+          {showDetails ? "Hide details" : "Details"}
         </button>
       </section>
 
-      {confirming && selectedProc && (
+      {confirm && selectedProc && (
         <section className="confirm">
           <span>
-            Send SIG{signal} to <strong>{selectedProc.name}</strong> (PID{" "}
-            {selectedProc.pid})?
+            Send SIG{signal} to <strong>{selectedProc.name}</strong> (PID {selectedProc.pid})
+            {confirm.tree ? " and all its children" : ""}?
           </span>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={confirm.asRoot}
+              onChange={(e) => setConfirm({ ...confirm, asRoot: e.target.checked })}
+            />
+            As root (pkexec)
+          </label>
           <button className="danger" onClick={sendSignal}>
             Confirm
           </button>
-          <button className="ghost" onClick={() => setConfirming(false)}>
+          <button className="ghost" onClick={() => setConfirm(null)}>
             Cancel
           </button>
         </section>
       )}
 
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              {COLUMNS.map((c) => (
-                <th
-                  key={c.key}
-                  className={c.numeric ? "num" : ""}
-                  onClick={() => sortBy(c.key)}
-                >
-                  {c.label}
-                  {sortKey === c.key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
-                </th>
-              ))}
-              <th>Command</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((p) => (
-              <tr
-                key={p.pid}
-                className={p.pid === selected ? "selected" : ""}
-                onClick={() => setSelected(p.pid === selected ? null : p.pid)}
-              >
-                <td className="num">{p.pid}</td>
-                <td>{p.name}</td>
-                <td>{p.user}</td>
-                <td className={`num cpu ${level(Math.min(p.cpu, 100))}`}>
-                  {p.cpu.toFixed(1)}
-                </td>
-                <td className="num">{fmtBytes(p.mem)}</td>
-                <td>{p.status}</td>
-                <td className="cmd muted" title={p.cmd}>
-                  {p.cmd || p.name}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {snap && rows.length === 0 && <p className="empty muted">No matching processes.</p>}
+      <div className="main">
+        <div className="table-wrap">
+          <ProcTable
+            rows={rows}
+            columns={visibleCols}
+            sortKey={settings.sortKey}
+            sortDir={settings.sortDir}
+            onSort={sortBy}
+            selected={selected}
+            onSelect={setSelected}
+            onToggle={toggleNode}
+            tree={settings.tree}
+          />
+        </div>
+        {selectedProc && showDetails && (
+          <DetailsPanel
+            proc={selectedProc}
+            cpuHistory={procCpu}
+            cores={s?.cpu_cores.length ?? 0}
+            elevate={needsRoot}
+            act={act}
+            onClose={() => setSelected(null)}
+          />
+        )}
       </div>
 
       <footer className="status">
@@ -355,8 +588,13 @@ export default function App() {
           <span>{notice}</span>
         ) : (
           <span className="muted">
-            Click a row to select · Delete: send signal · /: search · Esc: cancel
+            Click a row to select · Delete: signal · Shift+Delete: kill tree · /: search · Esc: cancel
           </span>
+        )}
+        {retry && (
+          <button className="danger small" onClick={retry.run}>
+            Retry as root
+          </button>
         )}
       </footer>
     </div>
