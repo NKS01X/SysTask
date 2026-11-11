@@ -20,6 +20,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
 }
 
 pub fn kill(pids: &[u32], signal: &str) -> Result<(), String> {
+    // `kill -s SIG 0` signals the caller's whole process group, so pid 0 must
+    // never reach pkexec (the unprivileged path rejects it in Monitor::kill).
+    if pids.is_empty() || pids.contains(&0) {
+        return Err("invalid pid".into());
+    }
     let mut args: Vec<String> = vec!["kill".into(), "-s".into(), signal.into()];
     args.extend(pids.iter().map(|p| p.to_string()));
     run(&args)
@@ -55,4 +60,28 @@ pub fn affinity(pid: u32, cpus: &[u32]) -> Result<(), String> {
         list,
         pid.to_string(),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These return before pkexec is spawned, so they are hermetic.
+    #[test]
+    fn kill_rejects_pid_zero_and_empty() {
+        assert_eq!(kill(&[0], "TERM").unwrap_err(), "invalid pid");
+        assert_eq!(kill(&[123, 0], "TERM").unwrap_err(), "invalid pid");
+        assert_eq!(kill(&[], "TERM").unwrap_err(), "invalid pid");
+    }
+
+    #[test]
+    fn renice_rejects_out_of_range() {
+        assert!(renice(1234, 20).is_err());
+        assert!(renice(1234, -21).is_err());
+    }
+
+    #[test]
+    fn affinity_rejects_empty_cpu_list() {
+        assert!(affinity(1234, &[]).is_err());
+    }
 }
