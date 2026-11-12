@@ -1,3 +1,4 @@
+use crate::procstat::{self, IoTracker, StatInfo};
 use crate::sysio::IoTotals;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -16,6 +17,16 @@ pub struct ProcInfo {
     pub mem: u64,
     pub status: String,
     pub cmd: String,
+    pub threads: u32,
+    pub nice: Option<i32>,
+    /// Accumulated CPU time (user + system) in seconds.
+    pub cpu_secs: f64,
+    /// Resident memory as a percent of total RAM.
+    pub mem_pct: f32,
+    /// Disk I/O rates in bytes/sec; `None` when /proc/<pid>/io isn't readable
+    /// (other users' processes) or there is no previous sample yet.
+    pub io_read_bps: Option<f64>,
+    pub io_write_bps: Option<f64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -50,6 +61,11 @@ pub struct Monitor {
     io_at: Instant,
     /// disk read, disk write, net rx, net tx (bytes/sec)
     io_rates: [f64; 4],
+    /// Per-process disk I/O rates.
+    proc_io: IoTracker,
+    /// /proc/<pid>/stat data, refreshed once per `refresh()`.
+    proc_stats: HashMap<u32, StatInfo>,
+    ticks_per_sec: f64,
 }
 
 impl Monitor {
@@ -60,6 +76,9 @@ impl Monitor {
             io_prev: IoTotals::read(),
             io_at: Instant::now(),
             io_rates: [0.0; 4],
+            proc_io: IoTracker::default(),
+            proc_stats: HashMap::new(),
+            ticks_per_sec: procstat::clock_ticks(),
         };
         m.refresh();
         Ok(m)
@@ -73,6 +92,13 @@ impl Monitor {
             true,
             ProcessRefreshKind::everything(),
         );
+
+        let pids: Vec<u32> = self.sys.processes().keys().map(|p| p.as_u32()).collect();
+        self.proc_stats = pids
+            .iter()
+            .filter_map(|&pid| procstat::read_stat(pid).map(|s| (pid, s)))
+            .collect();
+        self.proc_io.update(&pids);
 
         let now = Instant::now();
         let dt = now.duration_since(self.io_at).as_secs_f64();
@@ -109,6 +135,7 @@ impl Monitor {
             net_tx_bps: self.io_rates[3],
         };
 
+        let mem_total = self.sys.total_memory();
         let processes: Vec<ProcInfo> = self
             .sys
             .processes()
@@ -129,15 +156,29 @@ impl Monitor {
                     .map(|s| s.to_string_lossy())
                     .collect::<Vec<_>>()
                     .join(" ");
+                let pid = p.pid().as_u32();
+                let st = self.proc_stats.get(&pid);
+                let io = self.proc_io.rate(pid);
+                let mem = p.memory();
                 ProcInfo {
-                    pid: p.pid().as_u32(),
+                    pid,
                     ppid: p.parent().map(|pp| pp.as_u32()),
                     name: p.name().to_string_lossy().into_owned(),
                     user,
                     cpu: p.cpu_usage(),
-                    mem: p.memory(),
+                    mem,
                     status: p.status().to_string(),
                     cmd,
+                    threads: st.map_or(1, |s| s.threads),
+                    nice: st.map(|s| s.nice),
+                    cpu_secs: st.map_or(0.0, |s| s.cpu_ticks as f64 / self.ticks_per_sec),
+                    mem_pct: if mem_total > 0 {
+                        (mem as f64 * 100.0 / mem_total as f64) as f32
+                    } else {
+                        0.0
+                    },
+                    io_read_bps: io.map(|r| r.0),
+                    io_write_bps: io.map(|r| r.1),
                 }
             })
             .collect();
@@ -276,6 +317,21 @@ mod tests {
         assert!(snap.stats.mem_total > 0);
         assert!(!snap.stats.cpu_cores.is_empty());
         assert!(!snap.me.is_empty());
+    }
+
+    #[test]
+    fn snapshot_has_per_process_extras() {
+        let m = Monitor::new().unwrap();
+        let snap = m.snapshot();
+        let me = snap
+            .processes
+            .iter()
+            .find(|p| p.pid == std::process::id())
+            .unwrap();
+        assert!(me.threads >= 1);
+        assert!(me.nice.is_some());
+        assert!(me.cpu_secs >= 0.0);
+        assert!(me.mem_pct > 0.0 && me.mem_pct <= 100.0);
     }
 
     #[test]
