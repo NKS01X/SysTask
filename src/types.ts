@@ -7,6 +7,14 @@ export interface ProcInfo {
   mem: number;
   status: string;
   cmd: string;
+  threads: number;
+  nice: number | null;
+  /** Accumulated CPU time in seconds. */
+  cpu_secs: number;
+  mem_pct: number;
+  /** Bytes/sec; null when unreadable (other users' processes) or not yet sampled. */
+  io_read_bps: number | null;
+  io_write_bps: number | null;
 }
 
 export interface Stats {
@@ -55,6 +63,25 @@ export interface Details {
   restricted: boolean;
 }
 
+/** A socket from the system-wide Ports view. `pid`/`process` are null when the owner isn't visible. */
+export interface Connection {
+  proto: string;
+  local: string;
+  remote: string;
+  state: string;
+  pid: number | null;
+  process: string | null;
+}
+
+export interface Filesystem {
+  device: string;
+  mount: string;
+  fstype: string;
+  total: number;
+  used: number;
+  avail: number;
+}
+
 export type ColumnKey =
   | "name"
   | "pid"
@@ -62,6 +89,12 @@ export type ColumnKey =
   | "user"
   | "cpu"
   | "mem"
+  | "mem_pct"
+  | "cpu_secs"
+  | "threads"
+  | "nice"
+  | "io_read_bps"
+  | "io_write_bps"
   | "status"
   | "cmd";
 export type SortDir = "asc" | "desc";

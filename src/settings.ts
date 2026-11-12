@@ -17,6 +17,8 @@ export interface Settings {
   tree: boolean;
   mineOnly: boolean;
   showGraphs: boolean;
+  /** Hide to the tray instead of quitting when the window is closed. */
+  closeToTray: boolean;
   alerts: AlertSettings;
 }
 
@@ -31,6 +33,7 @@ export const DEFAULTS: Settings = {
   tree: false,
   mineOnly: false,
   showGraphs: true,
+  closeToTray: false,
   alerts: { enabled: true, cpu: 90, mem: 90, seconds: 10 },
 };
 
