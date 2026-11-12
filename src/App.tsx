@@ -6,6 +6,7 @@ import Popover from "./components/Popover";
 import ProcTable from "./components/ProcTable";
 import DetailsPanel from "./components/DetailsPanel";
 import { COLUMNS } from "./columns";
+import { edgeSelection, PAGE, stepSelection } from "./nav";
 import { useSettings } from "./settings";
 import { buildRows } from "./tree";
 import { fmtBytes, fmtRate, fmtUptime, level, push } from "./util";
@@ -173,6 +174,7 @@ export default function App() {
       const typing =
         document.activeElement instanceof HTMLInputElement ||
         document.activeElement instanceof HTMLSelectElement;
+      const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
       if (e.key === "Escape") {
         if (confirm) setConfirm(null);
         else if (typing) (document.activeElement as HTMLElement).blur();
@@ -182,11 +184,43 @@ export default function App() {
         searchRef.current?.focus();
       } else if (e.key === "Delete" && !typing && selectedProc) {
         openConfirm(e.shiftKey);
+      } else if (
+        plain &&
+        !typing &&
+        ["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End"].includes(e.key)
+      ) {
+        e.preventDefault();
+        const pids = rows.map((r) => r.p.pid);
+        if (e.key === "Home") setSelected(edgeSelection(pids, "start"));
+        else if (e.key === "End") setSelected(edgeSelection(pids, "end"));
+        else {
+          const delta =
+            e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : e.key === "PageDown" ? PAGE : -PAGE;
+          setSelected(stepSelection(pids, selected, delta));
+        }
+      } else if (
+        plain &&
+        !typing &&
+        settings.tree &&
+        selected !== null &&
+        (e.key === "ArrowRight" || e.key === "ArrowLeft")
+      ) {
+        const row = rows.find((r) => r.p.pid === selected);
+        if (row?.hasChildren && row.expanded === (e.key === "ArrowLeft")) {
+          e.preventDefault();
+          const pid = selected;
+          setCollapsed((cur) => {
+            const n = new Set(cur);
+            if (n.has(pid)) n.delete(pid);
+            else n.add(pid);
+            return n;
+          });
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [confirm, selectedProc, openConfirm]);
+  }, [confirm, selectedProc, openConfirm, rows, selected, settings.tree]);
 
   const act: ActFn = (label, fn, preferElevated = false) => {
     const exec = async (elevated: boolean) => {
@@ -397,6 +431,7 @@ export default function App() {
           ref={searchRef}
           className="search"
           type="text"
+          aria-label="Search processes"
           value={query}
           placeholder="Search name, user, PID, command   ( / )"
           onChange={(e) => setQuery(e.target.value)}
@@ -427,7 +462,7 @@ export default function App() {
             </button>
           </>
         )}
-        <button className={paused ? "warnbtn" : "ghost"} onClick={togglePause}>
+        <button className={paused ? "warnbtn" : "ghost"} aria-pressed={paused} onClick={togglePause}>
           {paused ? "▶ Resume" : "⏸ Pause"}
         </button>
         <label className="muted">
@@ -508,13 +543,14 @@ export default function App() {
           value={settings.theme}
           onChange={(e) => update({ theme: e.target.value as Theme })}
           title="Theme"
+          aria-label="Theme"
         >
           <option value="system">Theme: system</option>
           <option value="dark">Theme: dark</option>
           <option value="light">Theme: light</option>
         </select>
         <div className="spacer" />
-        <select value={signal} onChange={(e) => setSignal(e.target.value)}>
+        <select value={signal} onChange={(e) => setSignal(e.target.value)} aria-label="Signal">
           {SIGNALS.map((sg) => (
             <option key={sg} value={sg}>
               SIG{sg}
@@ -567,6 +603,7 @@ export default function App() {
             onSelect={setSelected}
             onToggle={toggleNode}
             tree={settings.tree}
+            emptyText={snap ? undefined : "Reading process list…"}
           />
         </div>
         {selectedProc && showDetails && (
@@ -587,8 +624,23 @@ export default function App() {
         ) : notice ? (
           <span>{notice}</span>
         ) : (
-          <span className="muted">
-            Click a row to select · Delete: signal · Shift+Delete: kill tree · /: search · Esc: cancel
+          <span className="hint muted">
+            <span>
+              <kbd>↑</kbd>
+              <kbd>↓</kbd> select
+            </span>
+            <span>
+              <kbd>/</kbd> search
+            </span>
+            <span>
+              <kbd>Del</kbd> signal
+            </span>
+            <span>
+              <kbd>⇧ Del</kbd> kill tree
+            </span>
+            <span>
+              <kbd>Esc</kbd> cancel
+            </span>
           </span>
         )}
         {retry && (
