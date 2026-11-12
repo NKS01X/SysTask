@@ -39,6 +39,17 @@ export default function Graph({ label, value, series, max, height = 56 }: Props)
         preserveAspectRatio="none"
         style={{ width: "100%", height }}
       >
+        {[0.25, 0.5, 0.75].map((f) => (
+          <line
+            key={f}
+            className="grid"
+            x1={0}
+            x2={W}
+            y1={height * f}
+            y2={height * f}
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
         {series.map((s, i) =>
           s.data.length > 1 ? (
             <g key={i}>
@@ -54,6 +65,8 @@ export default function Graph({ label, value, series, max, height = 56 }: Props)
                 fill="none"
                 stroke={s.color}
                 strokeWidth={1.5}
+                strokeLinejoin="round"
+                strokeLinecap="round"
                 vectorEffect="non-scaling-stroke"
               />
             </g>

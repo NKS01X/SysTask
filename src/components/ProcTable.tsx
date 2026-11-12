@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { ColumnDef } from "../columns";
 import type { Row } from "../tree";
 import type { ColumnKey, SortDir } from "../types";
 import { fmtBytes, level } from "../util";
 
-const ROW_H = 26;
+const ROW_H = 28;
 const OVERSCAN = 8;
 
 interface Props {
@@ -17,6 +17,14 @@ interface Props {
   onSelect: (pid: number | null) => void;
   onToggle: (pid: number) => void;
   tree: boolean;
+}
+
+function statusClass(status: string): string {
+  const s = status.toLowerCase();
+  if (s.startsWith("run")) return "run";
+  if (s.startsWith("zomb")) return "zombie";
+  if (s.startsWith("stop") || s.startsWith("trac")) return "stop";
+  return "";
 }
 
 export default function ProcTable({
@@ -88,12 +96,18 @@ export default function ProcTable({
             {p.user}
           </div>
         );
-      case "cpu":
+      case "cpu": {
+        const pct = Math.max(0, Math.min(p.cpu, 100));
         return (
-          <div className={`cell num cpu ${level(Math.min(p.cpu, 100))}`} key={c.key}>
+          <div
+            className={`cell num cpu ${level(pct)}`}
+            key={c.key}
+            style={{ "--p": `${pct}%` } as CSSProperties}
+          >
             {p.cpu.toFixed(1)}
           </div>
         );
+      }
       case "mem":
         return (
           <div className="cell num" key={c.key}>
@@ -103,7 +117,7 @@ export default function ProcTable({
       case "status":
         return (
           <div className="cell" key={c.key}>
-            {p.status}
+            <span className={`pill ${statusClass(p.status)}`}>{p.status}</span>
           </div>
         );
       case "cmd":
