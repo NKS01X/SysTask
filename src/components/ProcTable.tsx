@@ -18,6 +18,7 @@ interface Props {
   onSelect: (pid: number | null) => void;
   onToggle: (pid: number) => void;
   tree: boolean;
+  emptyText?: string;
 }
 
 function statusClass(status: string): string {
@@ -38,6 +39,7 @@ export default function ProcTable({
   onSelect,
   onToggle,
   tree,
+  emptyText = "No matching processes.",
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [top, setTop] = useState(0);
@@ -51,6 +53,21 @@ export default function ProcTable({
     setHeight(el.clientHeight);
     return () => ro.disconnect();
   }, []);
+
+  // Keep the selected row visible (keyboard navigation), clear of the sticky header.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || selected === null) return;
+    const idx = rows.findIndex((r) => r.p.pid === selected);
+    if (idx < 0) return;
+    const headH = el.querySelector<HTMLElement>(".vt-head")?.offsetHeight ?? 0;
+    const rowTop = headH + idx * ROW_H;
+    const rowBottom = rowTop + ROW_H;
+    if (rowTop - el.scrollTop < headH) el.scrollTop = rowTop - headH;
+    else if (rowBottom > el.scrollTop + el.clientHeight) el.scrollTop = rowBottom - el.clientHeight;
+    // Only when the selection itself changes, not on every refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected]);
 
   const start = Math.max(0, Math.floor(top / ROW_H) - OVERSCAN);
   const end = Math.min(rows.length, Math.ceil((top + height) / ROW_H) + OVERSCAN);
@@ -66,6 +83,7 @@ export default function ProcTable({
               (r.hasChildren ? (
                 <button
                   className="twisty"
+                  aria-label={r.expanded ? "Collapse children" : "Expand children"}
                   onClick={(e) => {
                     e.stopPropagation();
                     onToggle(p.pid);
@@ -175,6 +193,8 @@ export default function ProcTable({
           <div
             key={c.key}
             className={`cell head ${c.numeric ? "num" : ""}`}
+            title={`Sort by ${c.label}`}
+            aria-sort={sortKey === c.key ? (sortDir === "asc" ? "ascending" : "descending") : undefined}
             onClick={() => onSort(c.key)}
           >
             {c.label}
@@ -189,6 +209,7 @@ export default function ProcTable({
               key={r.p.pid}
               className={`vt-row${r.p.pid === selected ? " selected" : ""}`}
               style={{ gridTemplateColumns: template, height: ROW_H }}
+              aria-selected={r.p.pid === selected}
               onClick={() => onSelect(r.p.pid === selected ? null : r.p.pid)}
             >
               {columns.map((c) => cell(c, r))}
@@ -196,7 +217,7 @@ export default function ProcTable({
           ))}
         </div>
       </div>
-      {rows.length === 0 && <p className="empty muted">No matching processes.</p>}
+      {rows.length === 0 && <p className="empty muted">{emptyText}</p>}
     </div>
   );
 }
