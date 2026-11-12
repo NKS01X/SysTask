@@ -2,10 +2,11 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { ColumnDef } from "../columns";
 import type { Row } from "../tree";
 import type { ColumnKey, SortDir } from "../types";
-import { fmtBytes, level } from "../util";
+import { fmtBytes, fmtCpuTime, fmtRate, level } from "../util";
 
 const ROW_H = 28;
 const OVERSCAN = 8;
+const DASH = "—";
 
 interface Props {
   rows: Row[];
@@ -112,6 +113,42 @@ export default function ProcTable({
         return (
           <div className="cell num" key={c.key}>
             {fmtBytes(p.mem)}
+          </div>
+        );
+      case "mem_pct":
+        return (
+          <div className="cell num" key={c.key}>
+            {p.mem_pct.toFixed(1)}
+          </div>
+        );
+      case "cpu_secs":
+        return (
+          <div className="cell num" key={c.key}>
+            {fmtCpuTime(p.cpu_secs)}
+          </div>
+        );
+      case "threads":
+        return (
+          <div className="cell num" key={c.key}>
+            {p.threads}
+          </div>
+        );
+      case "nice":
+        return (
+          <div className="cell num" key={c.key}>
+            {p.nice ?? DASH}
+          </div>
+        );
+      case "io_read_bps":
+        return (
+          <div className="cell num" key={c.key}>
+            {p.io_read_bps === null ? DASH : fmtRate(p.io_read_bps)}
+          </div>
+        );
+      case "io_write_bps":
+        return (
+          <div className="cell num" key={c.key}>
+            {p.io_write_bps === null ? DASH : fmtRate(p.io_write_bps)}
           </div>
         );
       case "status":
