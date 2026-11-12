@@ -1,0 +1,185 @@
+/* Polish layer, loaded after App.css. */
+
+html {
+  overscroll-behavior: none;
+}
+
+body {
+  overflow: hidden;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.brand img {
+  border-radius: 7px;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
+}
+
+.sysinfo span {
+  padding: 0.15rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+}
+
+/* Summary cards */
+.meters {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.cores {
+  max-width: none;
+}
+
+.graphs {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.meter,
+.graph,
+.cores {
+  transition: border-color 0.15s ease;
+}
+
+.meter:hover,
+.graph:hover,
+.cores:hover {
+  border-color: var(--line-strong);
+}
+
+/* Controls */
+button {
+  white-space: nowrap;
+}
+
+button.ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel-2));
+}
+
+.toolbar select {
+  cursor: pointer;
+}
+
+.alert,
+.confirm {
+  animation: slide-in 0.16s ease-out;
+}
+
+.popover-body {
+  animation: pop 0.12s ease-out;
+  transform-origin: top left;
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Process table */
+.vt-head {
+  box-shadow: 0 1px 0 var(--line-strong), 0 6px 8px -7px rgba(0, 0, 0, 0.5);
+}
+
+.cell.head:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.vt-row.selected {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.twisty {
+  cursor: pointer;
+}
+
+.twisty:focus-visible,
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+
+.empty {
+  padding: 3rem 1.5rem;
+  font-size: 0.9rem;
+}
+
+.empty::before {
+  content: "\2315";
+  display: block;
+  margin-bottom: 0.4rem;
+  font-size: 2rem;
+  opacity: 0.5;
+}
+
+/* Status bar */
+.status {
+  gap: 1rem;
+}
+
+.hint {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.1rem;
+}
+
+.hint span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+kbd {
+  min-width: 1.3rem;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+  font-size: 0.68rem;
+  text-align: center;
+}
+
+.err {
+  font-weight: 500;
+}
+
+@media (max-width: 980px) {
+  .graphs {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .details {
+    width: 300px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
