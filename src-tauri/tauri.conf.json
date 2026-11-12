@@ -16,7 +16,8 @@
         "width": 1100,
         "height": 700,
         "minWidth": 800,
-        "minHeight": 500
+        "minHeight": 500,
+        "center": true
       }
     ],
     "security": {
@@ -25,7 +26,27 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
-    "icon": ["icons/icon.png"]
+    "targets": ["deb", "appimage"],
+    "icon": [
+      "icons/icon.png",
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Utility",
+    "publisher": "NKS01X",
+    "copyright": "Copyright (c) NKS01X",
+    "license": "MIT",
+    "shortDescription": "htop-style process manager for Linux",
+    "longDescription": "SysTask is a desktop process manager for Linux. It shows live CPU, memory, disk and network usage, a sortable and searchable process list with a tree view, and lets you signal, renice or pin processes to CPUs, elevating through polkit when needed.",
+    "linux": {
+      "deb": {
+        "section": "admin",
+        "priority": "optional",
+        "recommends": ["libnotify-bin", "policykit-1 | pkexec"]
+      }
+    }
   }
 }
