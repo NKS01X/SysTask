@@ -1,10 +1,13 @@
+mod conns;
 mod details;
 mod elevated;
+mod fsinfo;
 mod procs;
+mod procstat;
 mod sysio;
 
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
@@ -18,6 +21,11 @@ const MAX_REFRESH_MS: u64 = 10_000;
 pub struct AppState {
     monitor: Arc<Mutex<procs::Monitor>>,
     refresh_ms: Arc<AtomicU64>,
+    /// Hide to the tray instead of quitting when the window is closed.
+    close_to_tray: AtomicBool,
+    /// False when the tray icon could not be created (no tray on this desktop);
+    /// closing must then really close, or the app would be unreachable.
+    tray_ok: AtomicBool,
 }
 
 fn err(e: impl ToString) -> String {
@@ -89,11 +97,31 @@ async fn get_details(pid: u32) -> Result<details::Details, String> {
     details::get_details(pid)
 }
 
+/// System-wide sockets with their owning process (walks /proc, so off the async threads).
+#[tauri::command]
+async fn list_connections() -> Result<Vec<conns::Connection>, String> {
+    tauri::async_runtime::spawn_blocking(conns::list)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn list_filesystems() -> Result<Vec<fsinfo::Filesystem>, String> {
+    tauri::async_runtime::spawn_blocking(fsinfo::list)
+        .await
+        .map_err(err)
+}
+
 #[tauri::command]
 fn set_refresh_rate(state: State<AppState>, ms: u64) -> Result<(), String> {
     let ms = ms.clamp(MIN_REFRESH_MS, MAX_REFRESH_MS);
     state.refresh_ms.store(ms, Ordering::Relaxed);
     Ok(())
+}
+
+#[tauri::command]
+fn set_close_to_tray(state: State<AppState>, enabled: bool) {
+    state.close_to_tray.store(enabled, Ordering::Relaxed);
 }
 
 #[tauri::command]
@@ -148,13 +176,29 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if let Some(state) = window.try_state::<AppState>() {
+                    if state.close_to_tray.load(Ordering::Relaxed)
+                        && state.tray_ok.load(Ordering::Relaxed)
+                    {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                }
+            }
+        })
         .setup(|app| {
             let monitor = Arc::new(Mutex::new(procs::Monitor::new()?));
             let refresh_ms = Arc::new(AtomicU64::new(DEFAULT_REFRESH_MS));
 
-            if let Err(e) = build_tray(app.handle()) {
-                eprintln!("tray unavailable: {e}");
-            }
+            let tray_ok = match build_tray(app.handle()) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!("tray unavailable: {e}");
+                    false
+                }
+            };
 
             let handle = app.handle().clone();
             let m = Arc::clone(&monitor);
@@ -185,6 +229,8 @@ pub fn run() {
             app.manage(AppState {
                 monitor,
                 refresh_ms,
+                close_to_tray: AtomicBool::new(false),
+                tray_ok: AtomicBool::new(tray_ok),
             });
             Ok(())
         })
@@ -194,7 +240,10 @@ pub fn run() {
             renice,
             set_affinity,
             get_details,
+            list_connections,
+            list_filesystems,
             set_refresh_rate,
+            set_close_to_tray,
             notify
         ])
         .run(tauri::generate_context!())
