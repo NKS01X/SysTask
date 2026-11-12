@@ -27,7 +27,32 @@
 
 ## Features
 
-**Monitoring**
+| Feature | Status |
+| --- | --- |
+| Live process list (PID, name, user, CPU %, memory, state, command) | Done |
+| Sort by any column, text search/filter | Done |
+| System overview: CPU, per-core CPU, memory, swap, uptime, load average | Done |
+| Send signals (TERM, KILL, INT, HUP, STOP, CONT) with confirmation | Done |
+| Adjustable refresh rate (0.5s - 5s) | Done |
+| Keyboard shortcuts: `/` search, `Delete` signal, `Shift+Delete` kill tree, `Esc` cancel | Done |
+| Process tree view with collapse / expand | Done |
+| Details panel: threads, open files, ports, cwd, exe | Done |
+| Renice and CPU affinity | Done |
+| Kill process tree | Done |
+| CPU, memory, disk and network history graphs | Done |
+| Disk and network I/O rates (from `/proc`) | Done |
+| Column chooser, "my processes" filter, pause updates | Done |
+| Virtualized table for large process lists | Done |
+| Persisted settings: sort, columns, refresh, theme, alerts | Done |
+| Elevated actions via `pkexec` (kill, renice, affinity) | Done |
+| High CPU / memory alerts (in-app + `notify-send`), tray icon | Done |
+| CI (clippy, tests, build) | Done |
+| Packaged releases (`.deb`, AppImage) via tag-triggered workflow | Done |
+
+## Stack
+
+- Backend: Rust, Tauri v2, [`sysinfo`](https://crates.io/crates/sysinfo), `libc`
+- Frontend: React 18, TypeScript, Vite
 
 - Live process list: PID, name, user, CPU %, memory, state, command, with per-column visibility.
 - System overview: total and per-core CPU, memory, swap, uptime and load average.
@@ -121,7 +146,7 @@ React UI  <---- "snapshot" event (every refresh) ----  Rust backend (sysinfo + /
 
 The backend refreshes system data on a background thread and emits a full snapshot (system stats, I/O rates, every process) to the UI. The UI sends commands for actions. Settings are stored in the webview's `localStorage`.
 
-### Commands and events
+Generate the full icon set from the logo:
 
 | Name | Kind | Purpose |
 | --- | --- | --- |
@@ -175,24 +200,6 @@ To regenerate the icons after changing the logo:
 ```bash
 npm run tauri icon assets/logo.svg
 ```
-
-## Releasing
-
-1. Set the same version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`.
-2. Commit, then tag and push:
-
-   ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
-   ```
-
-3. The **Release** workflow builds the `.deb` and AppImage and attaches them to a draft GitHub release. Review the draft and publish it.
-
-## Roadmap
-
-- Network connections and filesystems views (the backend commands already exist).
-- Close-to-tray option in the settings.
-- Export the process list to CSV.
 
 ## License
 
