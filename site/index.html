@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SysTask 0.1: a process manager from /proc to the kill button</title>
+<meta name="description" content="How SysTask, a Tauri and Rust process manager for Linux, collects its numbers from /proc, turns them into a sortable process tree, and carries out signals, renice and CPU pinning, with the exact steps behind each action.">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;0,7..72,700;1,7..72,400&amp;family=Red+Hat+Mono:wght@400;500&amp;display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="bar">
+  <a class="home" href="./"><img src="logo.svg" alt="" width="32" height="32"><span>SysTask</span></a>
+  <nav><a href="https://github.com/NKS01X/SysTask">Source on GitHub</a></nav>
+</header>
+
+<div class="title-block">
+  <h1>SysTask 0.1: a process manager from /proc to the kill button</h1>
+  <p class="lede">SysTask is an htop-style process manager for the Linux desktop, written in Rust and React. This post follows the data from the kernel's <code>/proc</code> files to a row on screen, then follows each action, such as sending a signal or pinning a process to a core, from the click to the system call.</p>
+  <p class="byline">By Nikhil Kumar Singh, 12 November 2026. Covers version 0.1.0.</p>
+</div>
+
+<div class="page">
+
+<nav class="toc" aria-label="Contents">
+  <ol>
+    <li><a href="#what">What 0.1.0 does</a></li>
+    <li><a href="#shape">How the pieces fit together</a></li>
+    <li><a href="#numbers">Where the numbers come from</a></li>
+    <li><a href="#tick">One refresh, start to finish</a></li>
+    <li><a href="#rows">From a snapshot to rows on screen</a></li>
+    <li><a href="#tasks">What happens when you do something</a></li>
+    <li><a href="#guards">Guard rails</a></li>
+    <li><a href="#shipping">Tests, CI and releases</a></li>
+    <li><a href="#limits">What it does not do yet</a></li>
+    <li><a href="#install">Install and build</a></li>
+  </ol>
+</nav>
+
+<article>
+
+<h2 id="what">What 0.1.0 does</h2>
+
+<p>The window has two parts. The top shows system-wide figures: total and per-core CPU, memory, swap, uptime, load average, and four history graphs (CPU, memory, disk I/O, network). Underneath is a process table you can search, sort, switch to a tree, and choose columns for. Select a process and a side panel shows its threads, open files and sockets, and lets you change its priority or the CPUs it may run on. A signal can be sent to the process or to its whole subtree.</p>
+
+<p>Processes owned by root are handled through polkit, so the app itself never needs to run as root. It raises an alert, in the window and as a desktop notification, when CPU or memory stays high. Settings persist between runs.</p>
+
+<p>The backend is Rust: Tauri v2, the <code>sysinfo</code> crate, <code>libc</code>, and direct reads of <code>/proc</code>. The interface is React 18 and TypeScript, built with Vite. Everything is Linux-specific on purpose, since it reads procfs and calls <code>sched_setaffinity</code>, <code>setpriority</code> and <code>statvfs</code> directly. Release 0.1.0 is packaged as a <code>.deb</code> and an AppImage.</p>
+
+<h2 id="shape">How the pieces fit together</h2>
+
+<p>Tauri puts a Rust core and a system webview (WebKitGTK on Linux) in one process. The React app is ordinary web code served from the bundled <code>dist</code> folder, and it talks to Rust in two ways. The backend pushes a <em>snapshot</em> event to the page on every refresh. The page calls <em>commands</em> when the user wants something done.</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 780 340" role="img" aria-labelledby="d1t d1d">
+  <title id="d1t">Data flow between the Rust core and the React interface</title>
+  <desc id="d1d">A refresh thread locks the monitor, which reads procfs and sysinfo. The thread emits a snapshot event to the React app. The React app invokes commands back into Rust.</desc>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="d-arrow"/></marker>
+  </defs>
+  <rect class="d-group" x="10" y="10" width="300" height="320" rx="6"/>
+  <text class="d-title" x="26" y="34">Rust core</text>
+  <rect class="d-key" x="30" y="52" width="260" height="62" rx="4"/>
+  <text class="d-text" x="44" y="78">Refresh thread</text>
+  <text class="d-sub" x="44" y="98">sleep, refresh, emit</text>
+  <rect class="d-box" x="30" y="136" width="260" height="62" rx="4"/>
+  <text class="d-text" x="44" y="162">Monitor, behind a Mutex</text>
+  <text class="d-sub" x="44" y="182">refresh(), snapshot(), kill()</text>
+  <rect class="d-box" x="30" y="220" width="260" height="62" rx="4"/>
+  <text class="d-text" x="44" y="246">Readers</text>
+  <text class="d-sub" x="44" y="266">sysinfo, /proc, libc</text>
+  <text class="d-sub" x="30" y="312">tray tooltip: CPU % | MEM %</text>
+  <path class="d-line" d="M160 114V136" marker-end="url(#ah)"/>
+  <path class="d-line" d="M160 198V220" marker-end="url(#ah)"/>
+
+  <rect class="d-group" x="470" y="10" width="300" height="320" rx="6"/>
+  <text class="d-title" x="486" y="34">React UI in the webview</text>
+  <rect class="d-box" x="490" y="52" width="260" height="62" rx="4"/>
+  <text class="d-text" x="504" y="78">ingest()</text>
+  <text class="d-sub" x="504" y="98">latest snapshot, 120-sample history</text>
+  <rect class="d-box" x="490" y="136" width="260" height="62" rx="4"/>
+  <text class="d-text" x="504" y="162">buildRows()</text>
+  <text class="d-sub" x="504" y="182">filter, sort, tree</text>
+  <rect class="d-box" x="490" y="220" width="260" height="62" rx="4"/>
+  <text class="d-text" x="504" y="246">Virtualized table, graphs, panel</text>
+  <text class="d-sub" x="504" y="266">only visible rows are drawn</text>
+  <text class="d-sub" x="490" y="312">settings in localStorage</text>
+  <path class="d-line" d="M620 114V136" marker-end="url(#ah)"/>
+  <path class="d-line" d="M620 198V220" marker-end="url(#ah)"/>
+
+  <path class="d-line" d="M290 83H488" marker-end="url(#ah)"/>
+  <text class="d-label" x="334" y="72">snapshot event</text>
+  <path class="d-line" d="M490 251H400V167H292" marker-end="url(#ah)"/>
+  <text class="d-label" x="334" y="158">invoke()</text>
+</svg>
+<figcaption>The refresh thread sets the pace of the process list. The page does not poll for it.</figcaption>
+</figure>
+
+<p>Each snapshot carries a <code>Stats</code> block (CPU total and per core, memory, swap, uptime, load, and disk and network rates), a <code>ProcInfo</code> for every process, the user name SysTask runs as, and whether it is root. The commands the page can call are these.</p>
+
+<div class="ref">
+<table>
+  <thead><tr><th>Command</th><th>What it does</th><th>Used by the UI</th></tr></thead>
+  <tbody>
+    <tr><td><code>get_snapshot</code></td><td>Returns the current snapshot, used for the first paint and after un-pausing</td><td>Yes</td></tr>
+    <tr><td><code>get_details(pid)</code></td><td>Threads, open files, sockets, cwd, exe, nice, affinity</td><td>Yes</td></tr>
+    <tr><td><code>kill_process(pid, signal, tree, elevated)</code></td><td>Sends a signal to one process or its subtree</td><td>Yes</td></tr>
+    <tr><td><code>renice(pid, nice, elevated)</code></td><td>Changes priority, -20 to 19</td><td>Yes</td></tr>
+    <tr><td><code>set_affinity(pid, cpus, elevated)</code></td><td>Restricts the CPUs a process can run on</td><td>Yes</td></tr>
+    <tr><td><code>set_refresh_rate(ms)</code></td><td>Sets the refresh interval, clamped to 500 to 10000 ms</td><td>Yes</td></tr>
+    <tr><td><code>notify(title, body)</code></td><td>Desktop notification through <code>notify-send</code></td><td>Yes</td></tr>
+    <tr><td><code>list_connections</code></td><td>Every TCP and UDP socket with its owning process</td><td>Not yet</td></tr>
+    <tr><td><code>list_filesystems</code></td><td>Mounted filesystems and their usage</td><td>Not yet</td></tr>
+    <tr><td><code>set_close_to_tray(enabled)</code></td><td>Hide to the tray instead of quitting on close</td><td>Not yet</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The last three are implemented and tested in the backend but have no screen in 0.1.0. They are listed here because the API surface is part of the design.</p>
+
+<h2 id="numbers">Where the numbers come from</h2>
+
+<p>A process manager is mostly a careful reader of text files. The kernel exposes process and system state under <code>/proc</code>, and SysTask combines two sources: the <code>sysinfo</code> crate for the broad strokes, and its own parsers for what <code>sysinfo</code> does not give it.</p>
+
+<div class="ref">
+<table>
+  <thead><tr><th>Figure</th><th>Source</th><th>How it is derived</th></tr></thead>
+  <tbody>
+    <tr><td>CPU % (total, per core, per process)</td><td><code>sysinfo</code></td><td>Computed by <code>sysinfo</code> from the change between two consecutive refreshes, so it needs two samples to produce a number. Per-process CPU is a percentage of one core and can exceed 100 for multi-threaded programs.</td></tr>
+    <tr><td>Memory, swap, process list, user, command line, state, parent</td><td><code>sysinfo</code></td><td>Resident memory per process; the UI also shows it as a percentage of total RAM.</td></tr>
+    <tr><td>Threads, nice, CPU time</td><td><code>/proc/&lt;pid&gt;/stat</code></td><td>Fields 20, 19, and 14 plus 15. CPU time is user plus system clock ticks divided by <code>sysconf(_SC_CLK_TCK)</code>.</td></tr>
+    <tr><td>Per-process disk read and write rate</td><td><code>/proc/&lt;pid&gt;/io</code></td><td>The <code>read_bytes</code> and <code>write_bytes</code> counters, differenced between samples.</td></tr>
+    <tr><td>System disk throughput</td><td><code>/proc/diskstats</code></td><td>Sectors read and written, times 512, summed over whole disks only.</td></tr>
+    <tr><td>System network throughput</td><td><code>/proc/net/dev</code></td><td>Received and transmitted bytes summed over every interface except <code>lo</code>.</td></tr>
+    <tr><td>Load average, uptime</td><td><code>sysinfo</code></td><td>Read as is.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>Parsing /proc/&lt;pid&gt;/stat</h3>
+
+<p>The stat file is one line of space-separated fields. The catch is field 2, the command name, which sits in parentheses and may itself contain spaces and parentheses. A program called <code>my (weird) name</code> breaks any parser that splits on whitespace from the start of the line. SysTask finds the <em>last</em> closing parenthesis and parses everything after it, which is safe because no later field can contain one.</p>
+
+<figure class="code">
+<figcaption>src-tauri/src/procstat.rs</figcaption>
+<pre><code>pub fn parse_stat(s: &amp;str) -&gt; Option&lt;StatInfo&gt; {
+    let rest = &amp;s[s.rfind(')')? + 1..];
+    let f: Vec&lt;&amp;str&gt; = rest.split_whitespace().collect();
+    // `f[0]` is field 3 (state), so field N lives at index N - 3
+    let utime: u64 = f.get(11)?.parse().ok()?;
+    let stime: u64 = f.get(12)?.parse().ok()?;
+    // ... nice at index 16, threads at 17, start time at 19
+}</code></pre>
+</figure>
+
+<p>The unit test feeds it exactly that awkward name, and a second test checks that a truncated line returns <code>None</code> instead of panicking.</p>
+
+<h3>Turning counters into rates</h3>
+
+<p>The kernel reports I/O as running totals. A rate is the difference between two readings divided by the time between them. SysTask keeps the previous reading for every pid in an <code>IoTracker</code>. A sample is only taken if at least 0.2 seconds have passed since the last one, so a fast refresh setting cannot turn tiny deltas into noisy numbers. The subtraction saturates at zero, and a pid that vanished between samples is dropped.</p>
+
+<p>Reading <code>/proc/&lt;pid&gt;/io</code> is only allowed for your own processes. For everything else the read fails, the process gets no rate, and the table shows a dash rather than a misleading zero.</p>
+
+<p>For the system-wide disk figure, <code>/proc/diskstats</code> lists partitions and virtual devices as well as disks, and counting all of them would double count. The reader keeps whole disks and skips <code>loop</code>, <code>ram</code>, <code>dm-</code>, <code>zram</code>, <code>sr</code> and <code>md</code> devices. NVMe and MMC names are handled separately, because their partitions look like <code>nvme0n1p1</code> and <code>mmcblk0p1</code>. The filter works from names, so it is a heuristic.</p>
+
+<h2 id="tick">One refresh, start to finish</h2>
+
+<ol class="trace">
+  <li>
+    <p>A background thread, started at launch, sleeps for the current refresh interval. The default is one second. The window offers 0.5, 1, 2 and 5 seconds, and the backend clamps whatever it receives to between 0.5 and 10 seconds.</p>
+  </li>
+  <li>
+    <p>The thread locks the <code>Monitor</code> and calls <code>refresh()</code>. That refreshes CPU usage, memory and every process in <code>sysinfo</code>, reads <code>/proc/&lt;pid&gt;/stat</code> for each pid, updates the per-process I/O tracker, and, if at least 0.2 s has passed, re-reads the system disk and network totals.</p>
+    <span class="touch">procs.rs: Monitor::refresh</span>
+  </li>
+  <li>
+    <p><code>snapshot()</code> assembles the payload. For each process it resolves the numeric user id to a name, joins the command line into one string, merges in the stat data, and computes the memory percentage. SysTask finds its own entry in the list to learn which user it runs as, and checks <code>geteuid()</code> for root.</p>
+  </li>
+  <li>
+    <p>If the tray icon exists, its tooltip and title are set to something like <code>CPU 12% | MEM 41%</code>.</p>
+  </li>
+  <li>
+    <p>The snapshot is serialized and emitted as the <code>snapshot</code> event.</p>
+    <span class="touch">lib.rs: handle.emit("snapshot", snap)</span>
+  </li>
+  <li>
+    <p>In the webview, <code>ingest()</code> stores it and appends to six history series (CPU, memory, disk read and write, network receive and transmit), each capped at 120 samples. If a process is selected, its CPU value also goes into a per-process series for the side panel.</p>
+  </li>
+</ol>
+
+<p>This loop runs whether or not the window is visible, which is what keeps the tray tooltip current when the window is hidden. On start, the page also calls <code>get_snapshot</code> once so the first paint does not wait for the first tick.</p>
+
+<h2 id="rows">From a snapshot to rows on screen</h2>
+
+<p>Everything between the snapshot and the table happens in the browser side, in <code>buildRows()</code>. It runs on every new snapshot and every keystroke in the search box. The steps are fixed: filter, sort, and optionally nest into a tree.</p>
+
+<h3>Filtering and sorting</h3>
+
+<p>The search box matches case-insensitively against name, user, command line, and the PID as text. The "My processes" checkbox keeps only rows whose user equals the user SysTask runs as. Sorting compares numbers numerically and strings with <code>localeCompare</code>, treats a missing value as -1, and breaks ties by PID so rows do not jump around between refreshes. The default is CPU, descending. Clicking a different numeric column starts descending, a text column starts ascending, and clicking the active column flips it.</p>
+
+<h3>The tree</h3>
+
+<p>Every process records its parent's pid, so the tree is a grouping problem. The code indexes processes by pid, groups children under their parent, takes as roots any process whose parent is missing, and walks depth-first, emitting a row with a depth for each. Collapsed nodes are kept in a set of pids, and a collapsed node simply is not walked into. Siblings are sorted with the same comparator as the flat table.</p>
+
+<p>Filtering in tree mode needs one extra step. If a search matched only a deeply nested process, showing it alone would strip its context. So the code keeps every match <em>and all of its ancestors</em>, and expands everything while a filter is active.</p>
+
+<figure class="code">
+<figcaption>src/tree.ts</figcaption>
+<pre><code>for (const p of procs) {
+  if (!match(p)) continue;
+  let cur: ProcInfo | undefined = p;
+  while (cur &amp;&amp; !keep.has(cur.pid)) {
+    keep.add(cur.pid);
+    cur = cur.ppid !== null ? byPid.get(cur.ppid) : undefined;
+  }
+}</code></pre>
+</figure>
+
+<h3>Drawing thousands of rows</h3>
+
+<p>A busy machine can have thousands of processes, and recreating that many DOM rows every second would be slow. The table is virtualized. Rows have a fixed height of 28 px, the scroll container is given the full height of all rows so the scrollbar is honest, and only the rows inside the viewport plus 8 above and below are rendered, positioned absolutely at the right offset. When the selection moves by keyboard, the table scrolls just enough to keep the selected row visible and clear of the sticky header.</p>
+
+<p>The graphs are plain SVG polylines. The CPU and memory graphs use a fixed 0 to 100 scale. The disk and network graphs scale to the highest sample currently shown, shared by both of their lines, and in every graph the newest sample sits at the right edge.</p>
+
+<h2 id="tasks">What happens when you do something</h2>
+
+<p>These are the actions in the app, each as the sequence of steps behind it. Where a step touches the system, the file or call is noted underneath.</p>
+
+<h3>Find a process</h3>
+
+<ol class="trace">
+  <li><p>Press <kbd>/</kbd>. The search box takes focus unless you are already typing in a field.</p></li>
+  <li><p>Each keystroke re-runs <code>buildRows()</code> against the latest snapshot. No request goes to the backend.</p></li>
+  <li><p>Matching is by substring on name, user, command line and PID. Tick "My processes" to restrict to your own.</p></li>
+  <li><p>Use <kbd>↑</kbd> and <kbd>↓</kbd>, <kbd>PageUp</kbd> and <kbd>PageDown</kbd> (10 rows), <kbd>Home</kbd> and <kbd>End</kbd> to move the selection. In tree mode, <kbd>→</kbd> expands and <kbd>←</kbd> collapses the selected node. <kbd>Esc</kbd> leaves the search box, then clears the selection.</p></li>
+</ol>
+
+<h3>Inspect what a process is doing</h3>
+
+<ol class="trace">
+  <li><p>Click a row. The side panel opens and calls <code>get_details</code> immediately, then again every two seconds while that process stays selected.</p></li>
+  <li>
+    <p>The backend checks that <code>/proc/&lt;pid&gt;</code> exists, then reads the <code>exe</code> and <code>cwd</code> symlinks.</p>
+    <span class="touch">/proc/&lt;pid&gt;/exe, /proc/&lt;pid&gt;/cwd</span>
+  </li>
+  <li>
+    <p>Threads come from the directory listing of <code>/proc/&lt;pid&gt;/task</code>, with each thread's name read from its <code>comm</code> file.</p>
+    <span class="touch">/proc/&lt;pid&gt;/task/&lt;tid&gt;/comm</span>
+  </li>
+  <li>
+    <p>Open files come from reading every symlink in the fd directory. All of them are counted, the first 300 are returned, and the panel says "Showing 300 of N" when there are more. Targets of the form <code>socket:[12345]</code> also have their inode numbers collected.</p>
+    <span class="touch">/proc/&lt;pid&gt;/fd/*</span>
+  </li>
+  <li>
+    <p>The Ports tab is built by matching those inodes against the socket tables. The backend parses <code>tcp</code>, <code>tcp6</code>, <code>udp</code> and <code>udp6</code>, keeps the rows whose inode column belongs to this process, decodes the address, and maps the TCP state code to a name, for example <code>0A</code> to <code>LISTEN</code>.</p>
+    <span class="touch">/proc/net/tcp, tcp6, udp, udp6</span>
+  </li>
+  <li>
+    <p>The kernel prints addresses as little-endian hex, so <code>0100007F:0050</code> is 127.0.0.1 port 80. IPv6 addresses are four little-endian 32-bit words.</p>
+  </li>
+  <li>
+    <p>Affinity is read with <code>sched_getaffinity</code>. If the fd directory cannot be read, which is the normal case for another user's process, the details are marked restricted and the panel says some are hidden.</p>
+  </li>
+</ol>
+
+<h3>Send a signal</h3>
+
+<figure class="diagram">
+<svg viewBox="0 0 780 270" role="img" aria-labelledby="d2t d2d">
+  <title id="d2t">Path of a signal from the confirm bar to the status bar</title>
+  <desc id="d2d">The confirm bar calls kill_process, which validates the signal name and branches on whether the action is elevated. Not elevated goes to a direct kill call; elevated goes to pkexec. Both end in a status bar message. A permission error offers a retry that goes to the pkexec path.</desc>
+  <defs>
+    <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="d-arrow"/></marker>
+    <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="d-arrow-hot"/></marker>
+  </defs>
+  <rect class="d-box" x="10" y="20" width="150" height="46" rx="4"/>
+  <text class="d-text" x="24" y="48">Confirm bar</text>
+  <path class="d-line" d="M160 43H200" marker-end="url(#ah2)"/>
+  <rect class="d-box" x="200" y="20" width="250" height="46" rx="4"/>
+  <text class="d-text" x="214" y="48">kill_process: check signal name</text>
+  <path class="d-line" d="M450 43H490" marker-end="url(#ah2)"/>
+  <rect class="d-key" x="490" y="20" width="120" height="46" rx="4"/>
+  <text class="d-text" x="518" y="48">elevated?</text>
+
+  <path class="d-line" d="M550 66V92H325V124" marker-end="url(#ah2)"/>
+  <text class="d-label" x="420" y="86">no</text>
+  <path class="d-line" d="M550 92H610V124" marker-end="url(#ah2)"/>
+  <text class="d-label" x="578" y="86">yes</text>
+
+  <rect class="d-box" x="200" y="124" width="250" height="52" rx="4"/>
+  <text class="d-text" x="214" y="147">Monitor::kill or kill_tree</text>
+  <text class="d-sub" x="214" y="165">sysinfo kill_with()</text>
+  <rect class="d-box" x="490" y="124" width="250" height="52" rx="4"/>
+  <text class="d-text" x="504" y="147">pkexec</text>
+  <text class="d-sub" x="504" y="165">kill -s SIG pid pid ...</text>
+
+  <path class="d-line" d="M325 176V204" marker-end="url(#ah2)"/>
+  <path class="d-line" d="M615 176V204" marker-end="url(#ah2)"/>
+  <rect class="d-box" x="200" y="204" width="540" height="46" rx="4"/>
+  <text class="d-text" x="214" y="232">Status bar: result, or the error text</text>
+
+  <path class="d-back" d="M740 227H762V150H744" marker-end="url(#ah3)"/>
+  <text class="d-label-hot" transform="translate(774 190) rotate(-90)" text-anchor="middle">retry as root</text>
+</svg>
+<figcaption>The dashed path appears only when an unprivileged attempt fails with a permission error.</figcaption>
+</figure>
+
+<ol class="trace">
+  <li><p>Select a process and pick a signal from the dropdown: <code>TERM</code> (the default), <code>KILL</code>, <code>INT</code>, <code>HUP</code>, <code>STOP</code> or <code>CONT</code>. Press <kbd>Delete</kbd> or click Send signal.</p></li>
+  <li><p>A confirmation bar names the process and PID. It carries an "As root (pkexec)" checkbox that is pre-ticked when the process belongs to root and SysTask is not root.</p></li>
+  <li><p>On Confirm, the page calls <code>kill_process(pid, signal, tree, elevated)</code>.</p></li>
+  <li>
+    <p>Rust first normalizes the signal name against a whitelist of those six. <code>sigterm</code>, <code>SIGTERM</code> and <code>term</code> all become <code>TERM</code>; anything else is rejected before it can reach a system call.</p>
+    <span class="touch">procs.rs: canonical_signal</span>
+  </li>
+  <li>
+    <p>Not elevated: <code>Monitor::kill</code> rejects pid 0, looks the pid up in <code>sysinfo</code>'s process table (reporting "not found" if it has already exited), and calls <code>kill_with</code>. A result of true is success. False becomes "permission denied or process exited".</p>
+    <span class="touch">kill(2) via sysinfo</span>
+  </li>
+  <li>
+    <p>Elevated: the backend runs <code>pkexec kill -s SIG &lt;pids&gt;</code>. Polkit shows its own authentication dialog. Exit code 126 is reported as dismissed or not authorized, and 127 as a failed authentication, usually because no polkit agent is running.</p>
+    <span class="touch">elevated.rs: run</span>
+  </li>
+  <li><p>The result lands in the status bar. If an unprivileged attempt failed with an error matching permission, not permitted or denied, the bar shows a Retry as root button. It re-runs the same action with <code>elevated</code> set to true.</p></li>
+</ol>
+
+<h3>Kill a whole tree</h3>
+
+<ol class="trace">
+  <li><p>Press <kbd>Shift</kbd> + <kbd>Delete</kbd>, or click Kill tree. The confirmation bar adds "and all its children" to its message.</p></li>
+  <li>
+    <p>The backend builds a map from parent pid to child pids out of the <code>sysinfo</code> process table, then walks it depth-first from the chosen process. Children are listed before their parent, and the walk stops at a depth of 512 as a defence against a corrupt table.</p>
+    <span class="touch">procs.rs: Monitor::tree_pids</span>
+  </li>
+  <li><p>Pid 0 and pid 1 are refused for tree kills. Signalling the whole init tree is never what anyone meant.</p></li>
+  <li><p>Unprivileged, each pid is signalled individually and the results are counted. All succeeding gives "Sent SIGTERM to N processes". Some failing gives "signalled k of N processes (permission denied for the rest)". None succeeding is an error.</p></li>
+  <li><p>Elevated, the full pid list is computed first and handed to a single <code>pkexec kill</code> call, so one authentication covers the whole tree.</p></li>
+</ol>
+
+<h3>Act on a root-owned process</h3>
+
+<ol class="trace">
+  <li><p>When the selected process's user is <code>root</code> and SysTask is not root, signals, renice and affinity changes default to elevated. The side panel notes that the change will prompt for authentication.</p></li>
+  <li><p>Processes owned by other, non-root users are not auto-elevated. The first attempt fails with a permission error, and the Retry as root button takes it from there.</p></li>
+  <li><p>In both cases the elevated action is a fixed program run through <code>pkexec</code>: <code>kill</code>, <code>renice</code> or <code>taskset</code>, with numeric arguments passed as a list and never through a shell.</p></li>
+</ol>
+
+<h3>Change priority</h3>
+
+<ol class="trace">
+  <li><p>In the side panel, set the slider, which runs from -20 to 19 and starts at the process's current nice value, and click Apply.</p></li>
+  <li><p>The page calls <code>renice(pid, nice, elevated)</code>. The backend rejects values outside -20 to 19.</p></li>
+  <li>
+    <p>Unprivileged, it lists every thread id in <code>/proc/&lt;pid&gt;/task</code> and calls <code>setpriority</code> on each, because Linux keeps nice per thread. The first error, if any, is reported.</p>
+    <span class="touch">setpriority(PRIO_PROCESS, tid, nice)</span>
+  </li>
+  <li>
+    <p>Elevated, it runs <code>pkexec renice -n N -p PID</code>.</p>
+  </li>
+  <li><p>Making a process nicer, meaning a higher number, normally works for your own processes. Going below its current value normally needs root, which is the case the retry button exists for.</p></li>
+</ol>
+
+<h3>Pin a process to specific CPUs</h3>
+
+<ol class="trace">
+  <li><p>The panel shows one checkbox per core, filled in from <code>sched_getaffinity</code>. Tick the cores you want, or click All, and click Apply. Apply is disabled while nothing is ticked.</p></li>
+  <li><p>The page calls <code>set_affinity(pid, cpus, elevated)</code>. The backend rejects an empty list and any index at or above <code>CPU_SETSIZE</code>.</p></li>
+  <li>
+    <p>Unprivileged, it builds a <code>cpu_set_t</code> and calls <code>sched_setaffinity</code> once per thread id, again because affinity is a per-thread attribute.</p>
+    <span class="touch">sched_setaffinity(tid, ...)</span>
+  </li>
+  <li><p>Elevated, it runs <code>pkexec taskset -a -c -p LIST PID</code>, where <code>-a</code> applies it to every thread.</p></li>
+</ol>
+
+<h3>Get alerted about sustained load</h3>
+
+<ol class="trace">
+  <li><p>Alerts are on by default, with CPU and memory thresholds of 90 percent and a sustain time of 10 seconds. All three are editable under Alerts.</p></li>
+  <li><p>On each snapshot, if the value is at or above its limit, a timer starts the first time it is seen. If it is still at or above the limit once the sustain time has passed, the alert fires once.</p></li>
+  <li><p>Firing shows a dismissible banner (up to three at a time) and calls <code>notify</code>, which runs <code>notify-send</code>. The message names the top consumer, the process with the highest CPU for a CPU alert or the largest resident memory for a memory alert.</p></li>
+  <li><p>The alert re-arms only after the value has dropped more than five points below the limit, so a reading that hovers around the threshold does not produce a stream of alerts.</p></li>
+</ol>
+
+<h3>Pause, refresh rate, tray and saved settings</h3>
+
+<ul>
+  <li>Pause makes the page ignore incoming snapshots. The backend keeps sampling. Resuming calls <code>get_snapshot</code> so the table jumps to the present.</li>
+  <li>Changing the refresh rate calls <code>set_refresh_rate</code>, and the refresh thread picks up the new interval on its next sleep.</li>
+  <li>The tray icon toggles the window on left click and has Show / Hide and Quit in its menu. If the desktop has no tray, the icon is not created and closing the window really closes it, so the app cannot end up hidden with no way back.</li>
+  <li>Settings are saved in the webview's <code>localStorage</code> under <code>systask.settings.v1</code>: sort column and direction, visible columns, refresh rate, theme, tree mode, "My processes", graphs on or off, and alert thresholds. The default columns are Name, PID, User, CPU %, Memory, State and Command. PPID, Mem %, CPU time, Threads, Nice, Disk read and Disk write are in the column chooser.</li>
+</ul>
+
+<h2 id="guards">Guard rails</h2>
+
+<p>A tool that sends signals needs to be hard to misuse, including by its own bugs.</p>
+
+<ul>
+  <li><strong>Pid 0 is rejected twice.</strong> <code>kill -s SIG 0</code> signals the caller's entire process group. The unprivileged path already checked for it, and the elevated path did not, until pull request #2 added the check inside <code>elevated::kill</code> so every caller is covered.</li>
+  <li><strong>Pid 1 cannot be tree-killed,</strong> on either path.</li>
+  <li><strong>Signal names are whitelisted,</strong> and nice values and CPU indexes are range-checked in Rust, not only in the interface.</li>
+  <li><strong>Elevated commands are fixed programs with numeric arguments,</strong> passed as an argument list.</li>
+  <li><strong>The webview runs under a Content Security Policy:</strong> same-origin resources only, images from the app or data URLs, inline styles, and no network connections other than IPC to the Rust side.</li>
+</ul>
+
+<figure class="code">
+<figcaption>src-tauri/src/elevated.rs</figcaption>
+<pre><code>pub fn kill(pids: &amp;[u32], signal: &amp;str) -&gt; Result&lt;(), String&gt; {
+    // `kill -s SIG 0` signals the caller's whole process group, so pid 0 must
+    // never reach pkexec
+    if pids.is_empty() || pids.contains(&amp;0) {
+        return Err("invalid pid".into());
+    }
+    let mut args: Vec&lt;String&gt; = vec!["kill".into(), "-s".into(), signal.into()];
+    args.extend(pids.iter().map(|p| p.to_string()));
+    run(&amp;args)
+}</code></pre>
+</figure>
+
+<h2 id="shipping">Tests, CI and releases</h2>
+
+<p>The Rust crate has 32 unit tests. Several run against the real system rather than mocks: one starts <code>sleep 60</code>, sends it <code>SIGTERM</code> through <code>Monitor::kill</code>, and asserts that the child exited from signal 15. Another starts a shell with two background sleeps and checks that a tree kill finds all three processes and ends the parent. Two bind a real TCP and UDP socket and expect the socket lister to find them with the right owner. The parsers have fixed-input tests, including the malformed lines. The TypeScript side has unit tests for tree building, keyboard selection, connection filtering, CSV output and the formatting helpers.</p>
+
+<p>Continuous integration runs on every push to <code>main</code> and on pull requests, as two jobs. The frontend job installs, runs the tests and builds. The backend job installs the WebKitGTK and tray libraries, builds the frontend (the Tauri macro needs the <code>dist</code> folder to exist), then runs <code>cargo clippy --all-targets</code> and <code>cargo test</code>.</p>
+
+<p>Releases are driven by tags. Pushing a tag that starts with <code>v</code> runs the release workflow, which builds on Ubuntu 22.04 with <code>tauri-action</code> and uploads the bundles to a draft GitHub release. The <code>v0.1.0</code> run produced <code>SysTask_0.1.0_amd64.deb</code> (about 2.6 MB) and <code>SysTask_0.1.0_amd64.AppImage</code> (about 81 MB).</p>
+
+<h2 id="limits">What it does not do yet</h2>
+
+<ul>
+  <li><strong>Linux only.</strong> The readers and syscalls are Linux-specific by design.</li>
+  <li><strong>Full snapshots.</strong> Every refresh serializes the whole process list and sends it. There is no diffing. It is simple and fast enough at the default rate, but it is the first thing to revisit if CPU use of the monitor itself matters.</li>
+  <li><strong>Tree kills use the last snapshot.</strong> The set of children is whatever the most recent refresh saw, so a process forked in the last interval is not included.</li>
+  <li><strong>Other users' I/O is blank.</strong> Per-process disk rates, and some details, need permission to read the process's <code>/proc</code> files.</li>
+  <li><strong>No sockets or filesystems screen.</strong> The backend functions exist and are tested; the interface for them is not built.</li>
+  <li><strong>No close-to-tray switch.</strong> The backend command and the stored setting exist, but there is no control for it, so the default of quitting on close applies.</li>
+</ul>
+
+<h2 id="install">Install and build</h2>
+
+<p>On Debian or Ubuntu, install the package from the project's releases page. On other distributions, use the AppImage.</p>
+
+<figure class="code">
+<figcaption>install</figcaption>
+<pre><code>sudo apt install ./SysTask_0.1.0_amd64.deb
+
+# or, on any distribution
+chmod +x SysTask_0.1.0_amd64.AppImage
+./SysTask_0.1.0_amd64.AppImage</code></pre>
+</figure>
+
+<p>Desktop alerts use <code>notify-send</code> from <code>libnotify-bin</code>, and elevated actions need polkit with an authentication agent running. The <code>.deb</code> lists both as recommended packages.</p>
+
+<p>To build from source you need stable Rust, Node.js 18 or newer, and the WebKitGTK development libraries.</p>
+
+<figure class="code">
+<figcaption>build from source</figcaption>
+<pre><code>sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+  libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+npm install
+npm run tauri dev      # run in development
+npm run tauri build    # .deb and AppImage in src-tauri/target/release/bundle/
+
+npm test               # frontend tests
+cd src-tauri &amp;&amp; cargo test   # backend tests</code></pre>
+</figure>
+
+<p>The source is at <a href="https://github.com/NKS01X/SysTask">github.com/NKS01X/SysTask</a> under the MIT license.</p>
+
+</article>
+</div>
+
+<footer class="site">
+  <p>SysTask 0.1.0, MIT license.</p>
+  <p><a href="https://github.com/NKS01X/SysTask">Source</a> and <a href="https://github.com/NKS01X/SysTask/releases">releases</a> on GitHub.</p>
+</footer>
+
+</body>
+</html>
