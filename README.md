@@ -25,7 +25,8 @@
 | Persisted settings: sort, columns, refresh, theme, alerts | Done |
 | Elevated actions via `pkexec` (kill, renice, affinity) | Done |
 | High CPU / memory alerts (in-app + `notify-send`), tray icon | Done |
-| Packaged releases (`.deb`, AppImage) and CI | Planned |
+| CI (clippy, tests, build) | Done |
+| Packaged releases (`.deb`, AppImage) via tag-triggered workflow | Done |
 
 ## Stack
 
@@ -87,13 +88,17 @@ npm run tauri build
 
 Bundles (`.deb`, `.AppImage`) are written to `src-tauri/target/release/bundle/`.
 
+## Release
+
+Push a tag like `v0.1.0`. The release workflow builds the bundles and creates a draft GitHub release.
+
 ## Permissions
 
 SysTask runs as your user. You can signal and renice your own processes. For other users' processes (including root), the app offers "Retry as root" and runs the action through `pkexec`, which prompts for authentication. Root-owned processes are elevated automatically.
 
 ## Icons
 
-The bundled `icons/icon.png` is a placeholder. Generate the full set from the logo:
+Generate the full icon set from the logo:
 
 ```bash
 npm run tauri icon assets/logo.svg
@@ -112,10 +117,6 @@ src-tauri/src/       Rust backend
   elevated.rs        pkexec helpers
 src-tauri/icons/     App icons
 ```
-
-## Roadmap
-
-1. CI (clippy, tests, build) and release bundles.
 
 ## License
 
