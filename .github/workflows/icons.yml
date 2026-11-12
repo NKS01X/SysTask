@@ -1,0 +1,35 @@
+name: Generate icons
+
+# One-off: renders assets/logo.svg into the full Tauri icon set and commits it
+# back to the branch. Runs when this file is pushed, or manually.
+on:
+  push:
+    branches: [release-prep]
+    paths: [".github/workflows/icons.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  icons:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Render icons from the logo
+        run: |
+          npx --yes @tauri-apps/cli@2 icon assets/logo.svg --output src-tauri/icons
+          rm -rf src-tauri/icons/android src-tauri/icons/ios
+          rm -f src-tauri/icons/Square*.png src-tauri/icons/StoreLogo.png
+          ls -la src-tauri/icons
+      - name: Commit icons
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/icons
+          git diff --cached --quiet && echo "no changes" && exit 0
+          git commit -m "Generate app icons from assets/logo.svg"
+          git push
